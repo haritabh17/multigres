@@ -46,20 +46,20 @@ func TestToGRPCRegularError(t *testing.T) {
 }
 
 func TestToGRPCPgError(t *testing.T) {
-	pgErr := NewPgErrorFromDiagnostic(&sqltypes.PgDiagnostic{
+	pgDiag := &sqltypes.PgDiagnostic{
 		MessageType: protocol.MsgErrorResponse,
 		Severity:    "ERROR",
 		Code:        "42P01",
 		Message:     "relation does not exist",
 		Position:    15,
-	})
+	}
 
-	grpcErr := ToGRPC(pgErr)
+	grpcErr := ToGRPC(pgDiag)
 	require.NotNil(t, grpcErr)
 
 	st, ok := status.FromError(grpcErr)
 	require.True(t, ok)
-	assert.Equal(t, codes.Unknown, st.Code()) // PgError returns UNKNOWN code
+	assert.Equal(t, codes.Unknown, st.Code()) // PgDiagnostic returns UNKNOWN code
 
 	// Check that RPCError with PgDiagnostic is in details
 	details := st.Details()
@@ -97,8 +97,9 @@ func TestFromGRPCRegularError(t *testing.T) {
 	assert.Equal(t, "resource not found", got.Error())
 	assert.Equal(t, mtrpcpb.Code_NOT_FOUND, Code(got))
 
-	// Should NOT be a PgError
-	assert.False(t, IsPgError(got))
+	// Should NOT be a PgDiagnostic
+	var pgDiag *sqltypes.PgDiagnostic
+	assert.False(t, errors.As(got, &pgDiag))
 }
 
 func TestFromGRPCWithPgDiagnostic(t *testing.T) {
@@ -121,11 +122,10 @@ func TestFromGRPCWithPgDiagnostic(t *testing.T) {
 	got := FromGRPC(stWithDetails.Err())
 	require.NotNil(t, got)
 
-	// Should be a PgError
-	pgErr, ok := AsPgError(got)
-	require.True(t, ok)
+	// Should be a PgDiagnostic
+	var diag *sqltypes.PgDiagnostic
+	require.True(t, errors.As(got, &diag))
 
-	diag := pgErr.Diagnostic()
 	assert.Equal(t, byte(protocol.MsgErrorResponse), diag.MessageType)
 	assert.Equal(t, "ERROR", diag.Severity)
 	assert.Equal(t, "42000", diag.Code)
@@ -161,20 +161,18 @@ func TestPgErrorGRPCRoundTrip(t *testing.T) {
 		Constraint:       "users_pkey",
 	}
 
-	// Create PgError and convert to gRPC
-	pgErr := NewPgErrorFromDiagnostic(originalDiag)
-	grpcErr := ToGRPC(pgErr)
+	// Convert to gRPC
+	grpcErr := ToGRPC(originalDiag)
 
 	// Convert back from gRPC
 	recovered := FromGRPC(grpcErr)
 	require.NotNil(t, recovered)
 
-	// Should be a PgError
-	recoveredPgErr, ok := AsPgError(recovered)
-	require.True(t, ok)
+	// Should be a PgDiagnostic
+	var diag *sqltypes.PgDiagnostic
+	require.True(t, errors.As(recovered, &diag))
 
 	// Verify all 14 fields are preserved
-	diag := recoveredPgErr.Diagnostic()
 	assert.Equal(t, byte(protocol.MsgErrorResponse), diag.MessageType)
 	assert.Equal(t, "ERROR", diag.Severity)
 	assert.Equal(t, "23505", diag.Code)
@@ -192,7 +190,7 @@ func TestPgErrorGRPCRoundTrip(t *testing.T) {
 	assert.Equal(t, "users_pkey", diag.Constraint)
 
 	// Verify Error() message is preserved
-	assert.Equal(t, "ERROR: duplicate key value violates unique constraint", recoveredPgErr.Error())
+	assert.Equal(t, "ERROR: duplicate key value violates unique constraint", diag.Error())
 }
 
 func TestPgErrorGRPCRoundTripMinimalFields(t *testing.T) {
@@ -204,14 +202,11 @@ func TestPgErrorGRPCRoundTripMinimalFields(t *testing.T) {
 		Message:     "password authentication failed",
 	}
 
-	pgErr := NewPgErrorFromDiagnostic(originalDiag)
-	grpcErr := ToGRPC(pgErr)
+	grpcErr := ToGRPC(originalDiag)
 	recovered := FromGRPC(grpcErr)
 
-	recoveredPgErr, ok := AsPgError(recovered)
-	require.True(t, ok)
-
-	diag := recoveredPgErr.Diagnostic()
+	var diag *sqltypes.PgDiagnostic
+	require.True(t, errors.As(recovered, &diag))
 	assert.Equal(t, byte(protocol.MsgErrorResponse), diag.MessageType)
 	assert.Equal(t, "FATAL", diag.Severity)
 	assert.Equal(t, "28P01", diag.Code)
@@ -232,8 +227,9 @@ func TestNonPgErrorGRPCRoundTrip(t *testing.T) {
 	assert.Equal(t, "service unavailable", recovered.Error())
 	assert.Equal(t, mtrpcpb.Code_UNAVAILABLE, Code(recovered))
 
-	// Should NOT be a PgError
-	assert.False(t, IsPgError(recovered))
+	// Should NOT be a PgDiagnostic
+	var pgDiag *sqltypes.PgDiagnostic
+	assert.False(t, errors.As(recovered, &pgDiag))
 }
 
 func TestTruncateError(t *testing.T) {
@@ -262,16 +258,16 @@ func TestToGRPCPgErrorMessageTruncation(t *testing.T) {
 		largeMsg[i] = 'x'
 	}
 
-	pgErr := NewPgErrorFromDiagnostic(&sqltypes.PgDiagnostic{
+	pgDiag := &sqltypes.PgDiagnostic{
 		MessageType: protocol.MsgErrorResponse,
 		Severity:    "ERROR",
 		Code:        "42P01",
 		Message:     string(largeMsg),
 		Where:       string(largeMsg), // Large Where field that may exceed gRPC limits
-	})
+	}
 
 	// ToGRPC should still work, potentially falling back to basic error
-	grpcErr := ToGRPC(pgErr)
+	grpcErr := ToGRPC(pgDiag)
 	require.NotNil(t, grpcErr)
 
 	// Should be a valid gRPC error

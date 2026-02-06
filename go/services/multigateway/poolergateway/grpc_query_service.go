@@ -97,7 +97,8 @@ func (g *grpcQueryService) StreamExecute(
 	if err != nil {
 		// Convert gRPC error - if it's a PostgreSQL error, preserve it
 		grpcErr := mterrors.FromGRPC(err)
-		if mterrors.IsPgError(grpcErr) {
+		var pgDiag *sqltypes.PgDiagnostic
+		if errors.As(grpcErr, &pgDiag) {
 			return grpcErr
 		}
 		return fmt.Errorf("failed to start stream execute: %w", err)
@@ -114,7 +115,8 @@ func (g *grpcQueryService) StreamExecute(
 		if err != nil {
 			// Convert gRPC error - if it's a PostgreSQL error, preserve it
 			grpcErr := mterrors.FromGRPC(err)
-			if mterrors.IsPgError(grpcErr) {
+			var pgDiag *sqltypes.PgDiagnostic
+			if errors.As(grpcErr, &pgDiag) {
 				return grpcErr
 			}
 			return fmt.Errorf("stream receive error: %w", err)
@@ -199,7 +201,8 @@ func (g *grpcQueryService) PortalStreamExecute(
 	if err != nil {
 		// Convert gRPC error - if it's a PostgreSQL error, preserve it
 		grpcErr := mterrors.FromGRPC(err)
-		if mterrors.IsPgError(grpcErr) {
+		var pgDiag *sqltypes.PgDiagnostic
+		if errors.As(grpcErr, &pgDiag) {
 			return queryservice.ReservedState{}, grpcErr
 		}
 		return queryservice.ReservedState{}, fmt.Errorf("failed to start portal stream execute: %w", err)
@@ -218,7 +221,8 @@ func (g *grpcQueryService) PortalStreamExecute(
 		if err != nil {
 			// Convert gRPC error - if it's a PostgreSQL error, preserve it
 			grpcErr := mterrors.FromGRPC(err)
-			if mterrors.IsPgError(grpcErr) {
+			var pgDiag *sqltypes.PgDiagnostic
+			if errors.As(grpcErr, &pgDiag) {
 				return reservedState, grpcErr
 			}
 			return reservedState, fmt.Errorf("portal stream receive error: %w", err)
@@ -281,7 +285,8 @@ func (g *grpcQueryService) Describe(
 	if err != nil {
 		// Convert gRPC error - if it's a PostgreSQL error, preserve it
 		grpcErr := mterrors.FromGRPC(err)
-		if mterrors.IsPgError(grpcErr) {
+		var pgDiag *sqltypes.PgDiagnostic
+		if errors.As(grpcErr, &pgDiag) {
 			return nil, grpcErr
 		}
 		return nil, fmt.Errorf("describe failed: %w", err)

@@ -28,7 +28,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/multigres/multigres/go/common/mterrors"
 	"github.com/multigres/multigres/go/common/pgprotocol/protocol"
 	"github.com/multigres/multigres/go/common/pgprotocol/scram"
 	"github.com/multigres/multigres/go/common/sqltypes"
@@ -429,10 +428,11 @@ func (c *Conn) handleQuery() error {
 	})
 	if err != nil {
 		c.logger.Error("query execution failed", "query", queryStr, "error", err)
-		// Check if this is a PostgreSQL error (PgError) with full diagnostic info.
+		// Check if this is a PostgreSQL error (*sqltypes.PgDiagnostic) with full diagnostic info.
 		// If so, send the error with all PostgreSQL fields preserved for native format.
-		if pgErr, ok := mterrors.AsPgError(err); ok {
-			if writeErr := c.writeErrorFromDiagnostic(pgErr.Diagnostic()); writeErr != nil {
+		var diag *sqltypes.PgDiagnostic
+		if errors.As(err, &diag) {
+			if writeErr := c.writeErrorFromDiagnostic(diag); writeErr != nil {
 				return writeErr
 			}
 		} else {
@@ -692,10 +692,11 @@ func (c *Conn) handleExecute() error {
 		return nil
 	})
 	if err != nil {
-		// Check if this is a PostgreSQL error (PgError) with full diagnostic info.
+		// Check if this is a PostgreSQL error (*sqltypes.PgDiagnostic) with full diagnostic info.
 		// If so, send the error with all PostgreSQL fields preserved for native format.
-		if pgErr, ok := mterrors.AsPgError(err); ok {
-			if writeErr := c.writeErrorFromDiagnostic(pgErr.Diagnostic()); writeErr != nil {
+		var diag *sqltypes.PgDiagnostic
+		if errors.As(err, &diag) {
+			if writeErr := c.writeErrorFromDiagnostic(diag); writeErr != nil {
 				return writeErr
 			}
 		} else {

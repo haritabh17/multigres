@@ -16,6 +16,7 @@
 package mterrors
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -47,7 +48,7 @@ func truncateError(err error) string {
 }
 
 // ToGRPC returns an error as a gRPC error, with the appropriate error code.
-// If the error is a PgError, it includes the PgDiagnostic in the gRPC status details
+// If the error is a *sqltypes.PgDiagnostic, it includes the PgDiagnostic in the gRPC status details
 // so that all PostgreSQL error fields are preserved through the RPC.
 func ToGRPC(err error) error {
 	if err == nil {
@@ -55,20 +56,20 @@ func ToGRPC(err error) error {
 	}
 
 	// Check if this is a PostgreSQL error
-	if pgErr, ok := AsPgError(err); ok {
+	var diag *sqltypes.PgDiagnostic
+	if errors.As(err, &diag) {
 		// Create gRPC status with RPCError containing the PgDiagnostic
 		st := status.New(codes.Code(Code(err)), truncateError(err))
 		rpcErr := &mtrpcpb.RPCError{
-			Message:      pgErr.Error(),
-			Code:         pgErr.ErrorCode(),
-			PgDiagnostic: sqltypes.PgDiagnosticToProto(pgErr.Diagnostic()),
+			Message:      err.Error(),
+			Code:         mtrpcpb.Code_UNKNOWN,
+			PgDiagnostic: sqltypes.PgDiagnosticToProto(diag),
 		}
 		// Attach the RPCError as a detail to the status
 		stWithDetails, detailErr := st.WithDetails(rpcErr)
 		if detailErr != nil {
 			// Log a warning with context about the error being lost.
 			// This can happen if the error details are too large for gRPC limits.
-			diag := pgErr.Diagnostic()
 			truncatedMsg := diag.Message
 			if len(truncatedMsg) > 100 {
 				truncatedMsg = truncatedMsg[:100] + "..."
@@ -89,7 +90,7 @@ func ToGRPC(err error) error {
 }
 
 // FromGRPC returns a gRPC error as a mterrors error, translating between error codes.
-// If the gRPC error contains a PgDiagnostic in its details, it returns a PgError
+// If the gRPC error contains a PgDiagnostic in its details, it returns a *sqltypes.PgDiagnostic
 // to preserve all PostgreSQL error fields.
 // However, there are a few errors which are not translated and passed as they
 // are. For example, io.EOF since our code base checks for this error to find
@@ -111,10 +112,10 @@ func FromGRPC(err error) error {
 	// Check for RPCError in status details
 	for _, detail := range st.Details() {
 		if rpcErr, ok := detail.(*mtrpcpb.RPCError); ok {
-			// If PgDiagnostic is present, return a PgError
+			// If PgDiagnostic is present, return it directly
 			if rpcErr.GetPgDiagnostic() != nil {
 				diag := sqltypes.PgDiagnosticFromProto(rpcErr.GetPgDiagnostic())
-				return NewPgErrorFromDiagnostic(diag)
+				return diag
 			}
 			// Otherwise use the RPCError message and code
 			return New(rpcErr.Code, rpcErr.Message)
