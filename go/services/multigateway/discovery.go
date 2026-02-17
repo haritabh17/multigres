@@ -484,6 +484,12 @@ func (gd *GlobalPoolerDiscovery) Start() {
 
 				gd.logger.Info("Discovered cells", "cells", cells)
 
+				// No cells found yet — retry with backoff instead of blocking forever
+				if len(cells) == 0 {
+					gd.logger.Warn("No cells discovered, will retry")
+					return
+				}
+
 				// Start watchers for each cell
 				gd.mu.Lock()
 				for _, cell := range cells {
