@@ -74,6 +74,7 @@ type PostgresServerConfig struct {
 
 	// Other important settings
 	ClusterName string
+	Locale      string // LC_ALL locale for lc_messages, lc_monetary, lc_numeric, lc_time
 	User        string // PostgreSQL user name for HBA configuration
 
 	configMap map[string]string

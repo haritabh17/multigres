@@ -192,6 +192,12 @@ func initializeDataDir(logger *slog.Logger, poolerDir string, pgUser string, pgP
 	// the backup.
 	args := []string{"-D", dataDir, "--data-checksums", "--auth-local=trust", "--auth-host=scram-sha-256", "-U", pgUser}
 
+	// Pass locale from LC_ALL environment variable to initdb if set.
+	// This ensures the cluster locale matches the process environment.
+	if lcAll := os.Getenv("LC_ALL"); lcAll != "" {
+		args = append(args, "--locale="+lcAll)
+	}
+
 	// If password is provided, create a temporary password file for initdb
 	var tempPwFile string
 	if pgPassword != "" {

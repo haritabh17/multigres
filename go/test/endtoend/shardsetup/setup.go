@@ -65,6 +65,7 @@ type SetupConfig struct {
 	S3BackupBucket                      string // S3 bucket name (empty = use filesystem)
 	S3BackupRegion                      string // S3 region
 	S3BackupEndpoint                    string // S3 endpoint (empty = use AWS, otherwise s3mock/custom)
+	Locale                              string // LC_ALL locale for cluster (default: "en_US.UTF-8")
 }
 
 // SetupOption is a function that configures setup creation.
@@ -154,6 +155,14 @@ func WithS3Backup(bucket, region, endpoint string) SetupOption {
 		c.S3BackupBucket = bucket
 		c.S3BackupRegion = region
 		c.S3BackupEndpoint = endpoint
+	}
+}
+
+// WithLocale sets the LC_ALL locale for the PostgreSQL cluster.
+// Default is "en_US.UTF-8". Use "C" for pgregress compatibility.
+func WithLocale(locale string) SetupOption {
+	return func(c *SetupConfig) {
+		c.Locale = locale
 	}
 }
 
@@ -372,6 +381,7 @@ func New(t *testing.T, opts ...SetupOption) *ShardSetup {
 		TopoServer:         ts,
 		CellName:           config.CellName,
 		Multipoolers:       make(map[string]*MultipoolerInstance),
+		Locale:             config.Locale,
 		MultiOrchInstances: make(map[string]*ProcessInstance),
 		BackupLocation:     backupLocation,
 	}

@@ -27,6 +27,7 @@ var setupManager = shardsetup.NewSharedSetupManager(func(t *testing.T) *shardset
 	return shardsetup.New(t,
 		shardsetup.WithMultipoolerCount(2), // primary + standby
 		shardsetup.WithMultigateway(),      // enable multigateway for PostgreSQL connections
+		shardsetup.WithLocale("C"),         // pgregress expects C locale
 	)
 })
 
