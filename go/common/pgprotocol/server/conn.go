@@ -542,7 +542,7 @@ func (c *Conn) handleQuery() error {
 		}
 
 		// On first callback with fields for this result set, send RowDescription.
-		if !sentRowDescription && len(result.Fields) > 0 {
+		if !sentRowDescription && result.Fields != nil {
 			if err := c.writeRowDescription(result.Fields); err != nil {
 				return fmt.Errorf("writing row description: %w", err)
 			}
@@ -804,7 +804,7 @@ func (c *Conn) handleExecute() error {
 		}
 
 		// On first callback with fields, send RowDescription.
-		if !sentRowDescription && len(result.Fields) > 0 {
+		if !sentRowDescription && result.Fields != nil {
 			if err := c.writeRowDescription(result.Fields); err != nil {
 				return fmt.Errorf("writing row description: %w", err)
 			}
