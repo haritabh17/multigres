@@ -74,6 +74,13 @@ func GeneratePostgresServerConfig(poolerDir string, port int, pgUser string) (*P
 	cnf.ClusterName = "default"
 	cnf.User = pgUser
 
+	// Set locale from LC_ALL environment variable, defaulting to en_US.UTF-8
+	if lcAll := os.Getenv("LC_ALL"); lcAll != "" {
+		cnf.Locale = lcAll
+	} else {
+		cnf.Locale = "en_US.UTF-8"
+	}
+
 	// Ensure Unix socket directory exists
 	if err := os.MkdirAll(cnf.UnixSocketDirectories, 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create Unix socket directory: %w", err)
@@ -82,7 +89,7 @@ func GeneratePostgresServerConfig(poolerDir string, port int, pgUser string) (*P
 	// Set Multigres default values - starting with Pico instance defaults from Supabase
 	// Reference: https://github.com/supabase/supabase-admin-api/blob/3765a153ef6361cb19a1cbd485cdbf93e0a1820a/optimizations/postgres.go#L38
 	// These can be changed in the future based on instance size/requirements
-	cnf.MaxConnections = 60
+	cnf.MaxConnections = 250
 	cnf.SharedBuffers = "64MB"
 	cnf.MaintenanceWorkMem = "16MB"
 	cnf.WorkMem = "1092kB"
