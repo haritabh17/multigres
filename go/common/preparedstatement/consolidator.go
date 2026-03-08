@@ -86,7 +86,12 @@ func (psi *PreparedStatementInfo) AstStmt() ast.Stmt {
 func NewPreparedStatementInfo(ps *querypb.PreparedStatement) (*PreparedStatementInfo, error) {
 	asts, err := parser.ParseSQL(ps.Query)
 	if err != nil {
-		return nil, err
+		// Parse error: allow passthrough — the SQL will be sent directly to PG.
+		// astStruct will be nil, which the executor handles as a passthrough.
+		return &PreparedStatementInfo{
+			PreparedStatement: ps,
+			astStruct:         nil,
+		}, nil
 	}
 	if len(asts) != 1 {
 		return nil, errors.New("more than 1 query in prepare statement")
