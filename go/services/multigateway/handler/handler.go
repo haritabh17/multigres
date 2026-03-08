@@ -202,6 +202,9 @@ func (h *MultiGatewayHandler) HandleQuery(ctx context.Context, conn *server.Conn
 			"statement_count", len(asts),
 			"already_in_transaction", conn.IsInTransaction())
 		err = h.executeWithImplicitTransaction(ctx, conn, st, queryStr, asts, countingCallback)
+	} else if isSQLPrepareOrDeallocate(asts[0]) {
+		// SQL-level PREPARE/DEALLOCATE — handle locally via consolidator
+		err = h.executeSQLPrepareOrDeallocate(ctx, conn, asts[0], countingCallback)
 	} else {
 		// Single statement - execute with timeout enforcement
 		ctx, cancel := h.statementTimeoutCtx(ctx, st, asts[0])

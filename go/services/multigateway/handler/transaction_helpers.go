@@ -67,6 +67,9 @@ func (h *MultiGatewayHandler) executeWithImplicitTransaction(
 	callback func(ctx context.Context, result *sqltypes.Result) error,
 ) error {
 	execute := func(stmt ast.Stmt) error {
+		if isSQLPrepareOrDeallocate(stmt) {
+			return h.executeSQLPrepareOrDeallocate(ctx, conn, stmt, callback)
+		}
 		stmtCtx, cancel := h.statementTimeoutCtx(ctx, state, stmt)
 		defer cancel()
 		return h.executor.StreamExecute(stmtCtx, conn, state, stmt.SqlString(), stmt, callback)
@@ -157,7 +160,16 @@ func (h *MultiGatewayHandler) executeWithImplicitTransaction(
 		// without it. This causes the server to write DataRow messages but NOT the
 		// CommandComplete message — that waits for the commit outcome.
 		var execErr error
-		if i == len(stmts)-1 && isImplicitTx {
+		if i == len(stmts)-1 && isImplicitTx && isSQLPrepareOrDeallocate(stmt) {
+			execErr = h.executeSQLPrepareOrDeallocate(ctx, conn, stmt,
+				func(ctx context.Context, result *sqltypes.Result) error {
+					if result.CommandTag != "" {
+						heldCommandTag = result.CommandTag
+						return nil
+					}
+					return callback(ctx, result)
+				})
+		} else if i == len(stmts)-1 && isImplicitTx {
 			stmtCtx, cancel := h.statementTimeoutCtx(ctx, state, stmt)
 			execErr = h.executor.StreamExecute(stmtCtx, conn, state, stmt.SqlString(), stmt,
 				func(ctx context.Context, result *sqltypes.Result) error {

@@ -23,6 +23,25 @@ import (
 	"github.com/multigres/multigres/go/pb/query"
 )
 
+// PreparedStatementSettingsPrefix is the prefix used to encode prepared
+// statements in SessionSettings. Keys with this prefix are handled via
+// wire-level Parse instead of set_config().
+const PreparedStatementSettingsPrefix = "__ps:"
+
+// PreparedStatementsFromSettings extracts prepared statement entries from
+// a settings map. Returns a map of statement name → query.
+func PreparedStatementsFromSettings(vars map[string]string) map[string]string {
+	result := make(map[string]string)
+	for k, v := range vars {
+		if strings.HasPrefix(k, PreparedStatementSettingsPrefix) {
+			name := k[len(PreparedStatementSettingsPrefix):]
+			result[name] = v
+		}
+	}
+	return result
+}
+
+
 // ConnectionState represents the cumulative state of a connection.
 // This includes all state modifiers like session settings and prepared statements.
 //
@@ -289,11 +308,18 @@ func (s *Settings) ApplyQuery() string {
 	sort.Strings(keys)
 
 	// Build apply query using set_config() for correct list GUC handling.
+	// Skip prepared statement entries (__ps: prefix) — those are handled
+	// separately via wire-level Parse in ApplySettings.
 	var b strings.Builder
-	for i, k := range keys {
-		if i > 0 {
+	first := true
+	for _, k := range keys {
+		if strings.HasPrefix(k, PreparedStatementSettingsPrefix) {
+			continue
+		}
+		if !first {
 			b.WriteString("; ")
 		}
+		first = false
 		b.WriteString("SELECT pg_catalog.set_config('")
 		b.WriteString(strings.ReplaceAll(k, "'", "''"))
 		b.WriteString("', '")
@@ -332,4 +358,48 @@ func (s *Settings) Clone() *Settings {
 	}
 	maps.Copy(clone.Vars, s.Vars)
 	return clone
+}
+
+// GetPreparedStatements returns a map of all prepared statements on this
+// connection: name → query text. Used for syncing prepared statement state.
+func (s *ConnectionState) GetPreparedStatements() map[string]string {
+	if s == nil {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result := make(map[string]string, len(s.PreparedStatements))
+	for name, stmt := range s.PreparedStatements {
+		result[name] = stmt.Query
+	}
+	return result
+}
+
+// RemovePreparedStatement removes a prepared statement by name.
+func (s *ConnectionState) RemovePreparedStatement(name string) {
+	if s == nil {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.PreparedStatements, name)
+}
+
+// StorePreparedStatementSimple stores a prepared statement with just name and query.
+func (s *ConnectionState) StorePreparedStatementSimple(name, queryStr string) {
+	if s == nil {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.PreparedStatements[name] = &query.PreparedStatement{
+		Name:  name,
+		Query: queryStr,
+	}
 }

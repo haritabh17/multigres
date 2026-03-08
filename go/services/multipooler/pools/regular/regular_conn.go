@@ -125,8 +125,12 @@ func (c *Conn) ApplySettings(ctx context.Context, desired *connstate.Settings) e
 	// Note: "role" and "session_authorization" have GUC_NO_RESET_ALL in
 	// PostgreSQL, so they MUST be reset individually — RESET ALL won't
 	// touch them. We handle them here with explicit RESET commands.
+	// Skip prepared statement entries (__ps: prefix) — handled by syncPreparedStatements.
 	if current != nil {
 		for name := range current.Vars {
+			if strings.HasPrefix(name, connstate.PreparedStatementSettingsPrefix) {
+				continue
+			}
 			if _, ok := desired.Vars[name]; !ok {
 				if b.Len() > 0 {
 					b.WriteString("; ")
@@ -157,6 +161,57 @@ func (c *Conn) ApplySettings(ctx context.Context, desired *connstate.Settings) e
 
 	// Update tracked state.
 	c.State().SetSettings(desired)
+
+	// Ensure prepared statements are synced on this connection.
+	if err := c.syncPreparedStatements(ctx, desired); err != nil {
+		return fmt.Errorf("failed to sync prepared statements: %w", err)
+	}
+
+	return nil
+}
+
+// syncPreparedStatements ensures the connection has exactly the prepared
+// statements specified in the settings (keys with __ps: prefix).
+// Missing statements are created via Parse. Extra statements (from previous
+// sessions) are deallocated.
+func (c *Conn) syncPreparedStatements(ctx context.Context, desired *connstate.Settings) error {
+	if desired == nil {
+		return nil
+	}
+	desiredPS := connstate.PreparedStatementsFromSettings(desired.Vars)
+
+	// Get current prepared statements on this connection.
+	currentPS := c.State().GetPreparedStatements()
+
+	// Deallocate statements that exist on the connection but aren't desired.
+	for name := range currentPS {
+		if _, ok := desiredPS[name]; !ok {
+			if _, err := c.Query(ctx, "DEALLOCATE "+name); err != nil {
+				// Ignore errors — statement might not exist on PG side.
+			}
+			c.State().RemovePreparedStatement(name)
+		}
+	}
+
+	// Parse statements that are desired but not on this connection.
+	for name, query := range desiredPS {
+		existing := currentPS[name]
+		if existing == query {
+			continue // Already prepared with same query.
+		}
+		if existing != "" {
+			// Different query — deallocate first.
+			if _, err := c.Query(ctx, "DEALLOCATE "+name); err != nil {
+				// Ignore errors.
+			}
+		}
+		// Parse the statement on this connection.
+		if err := c.conn.Parse(ctx, name, query, nil); err != nil {
+			return fmt.Errorf("failed to prepare statement %q: %w", name, err)
+		}
+		c.State().StorePreparedStatementSimple(name, query)
+	}
+
 	return nil
 }
 
