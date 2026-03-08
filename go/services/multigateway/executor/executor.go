@@ -77,8 +77,16 @@ func (e *Executor) StreamExecute(
 		"database", conn.Database(),
 		"connection_id", conn.ConnectionID())
 
-	// Step 1: Plan the query (now with AST for better analysis)
-	plan, err := e.planner.Plan(queryStr, astStmt, conn)
+	// Step 1: Plan the query
+	// If astStmt is nil, the parser couldn't handle this SQL — use default route (passthrough).
+	var plan *engine.Plan
+	var err error
+	if astStmt == nil {
+		route := engine.NewRoute(e.planner.GetDefaultTableGroup(), constants.DefaultShard, queryStr)
+		plan = engine.NewPlan(queryStr, route)
+	} else {
+		plan, err = e.planner.Plan(queryStr, astStmt, conn)
+	}
 	if err != nil {
 		e.logger.ErrorContext(ctx, "query planning failed",
 			"query", queryStr,

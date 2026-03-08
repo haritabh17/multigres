@@ -115,8 +115,43 @@ func (h *MultiGatewayHandler) HandleQuery(ctx context.Context, conn *server.Conn
 	asts, err := parser.ParseSQL(queryStr)
 	parseDuration := time.Since(parseStart)
 	if err != nil {
-		h.recordQueryCompletion(ctx, conn, "UNKNOWN", "simple", parseDuration, 0, time.Since(queryStart), 0, err)
-		return err
+		// Parse error: fall through to passthrough mode.
+		// Route the raw SQL directly to PostgreSQL without AST-based planning.
+		h.logger.DebugContext(ctx, "parse error, falling through to passthrough",
+			"query", queryStr, "error", err)
+
+		ctx, span := startQuerySpan(ctx, "PASSTHROUGH", "simple", conn.Database(), conn.User())
+		defer span.End()
+
+		st := h.getConnectionState(conn)
+
+		if conn.TxnStatus() == protocol.TxnStatusFailed {
+			h.recordQueryCompletion(ctx, conn, "PASSTHROUGH", "simple", parseDuration, 0, time.Since(queryStart), 0, errAbortedTransaction)
+			return errAbortedTransaction
+		}
+
+		var rowCount int64
+		countingCallback := func(ctx context.Context, result *sqltypes.Result) error {
+			if result != nil {
+				rowCount += int64(len(result.Rows))
+			}
+			return callback(ctx, result)
+		}
+
+		execStart := time.Now()
+		execErr := h.executor.StreamExecute(ctx, conn, st, queryStr, nil, countingCallback)
+		if execErr != nil {
+			if conn.TxnStatus() == protocol.TxnStatusInBlock {
+				conn.SetTxnStatus(protocol.TxnStatusFailed)
+			}
+		}
+		execDuration := time.Since(execStart)
+		totalDuration := time.Since(queryStart)
+		h.recordQueryCompletion(ctx, conn, "PASSTHROUGH", "simple", parseDuration, execDuration, totalDuration, rowCount, execErr)
+		if execErr != nil {
+			recordSpanError(span, execErr, mterrors.ExtractSQLSTATE(execErr))
+		}
+		return execErr
 	}
 
 	// Handle empty query (e.g., just a semicolon or whitespace).
