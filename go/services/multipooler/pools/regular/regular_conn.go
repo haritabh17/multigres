@@ -170,7 +170,10 @@ func (c *Conn) ResetAllSettings(ctx context.Context) error {
 	}
 
 	// Execute RESET ALL.
-	_, err := c.Query(ctx, "RESET ALL")
+	// RESET SESSION AUTHORIZATION must come before RESET ALL because
+	// PG marks role and session_authorization with GUC_NO_RESET_ALL.
+	// Without this, pooled connections retain the previous session's role.
+	_, err := c.Query(ctx, "RESET SESSION AUTHORIZATION; RESET ALL")
 	if err != nil {
 		return fmt.Errorf("failed to reset settings: %w", err)
 	}
