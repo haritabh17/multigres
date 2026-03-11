@@ -315,6 +315,21 @@ func (c *Conn) processQueryResponses(ctx context.Context, callback func(ctx cont
 				firstErr = callback(ctx, noticeResult)
 			}
 
+		case protocol.MsgNotificationResponse:
+			// NotificationResponse ('A') can arrive at any time on connections that
+			// have issued LISTEN. Parse and deliver via callback as a notification result.
+			if callback != nil && firstErr == nil {
+				notif, err := c.parseNotificationResponse(body)
+				if err != nil {
+					firstErr = err
+				} else {
+					notifResult := &sqltypes.Result{
+						Notifications: []*sqltypes.Notification{notif},
+					}
+					firstErr = callback(ctx, notifResult)
+				}
+			}
+
 		case protocol.MsgParameterStatus:
 			// Handle parameter status updates. Capture error but continue draining.
 			if firstErr == nil {
@@ -573,4 +588,27 @@ func (c *Conn) parseError(body []byte) error {
 // parseNotice parses a NoticeResponse message into a mterrors.PgDiagnostic.
 func (c *Conn) parseNotice(body []byte) *mterrors.PgDiagnostic {
 	return parseDiagnosticFields(protocol.MsgNoticeResponse, body)
+}
+
+// parseNotificationResponse parses a NotificationResponse ('A') message.
+// Format: Int32(pid) + String(channel) + String(payload)
+func (c *Conn) parseNotificationResponse(body []byte) (*sqltypes.Notification, error) {
+	reader := NewMessageReader(body)
+	pid, err := reader.ReadInt32()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read notification PID: %w", err)
+	}
+	channel, err := reader.ReadString()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read notification channel: %w", err)
+	}
+	payload, err := reader.ReadString()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read notification payload: %w", err)
+	}
+	return &sqltypes.Notification{
+		PID:     pid,
+		Channel: channel,
+		Payload: payload,
+	}, nil
 }
