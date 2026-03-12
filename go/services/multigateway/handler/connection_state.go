@@ -59,6 +59,17 @@ type MultiGatewayConnectionState struct {
 	// connection so the multipooler can use the exact statement instead of plain "BEGIN".
 	PendingBeginQuery string
 
+	// ListenChannels tracks active LISTEN channels for this connection.
+	ListenChannels map[string]bool
+
+	// PendingListens/PendingUnlistens track LISTEN/UNLISTEN inside transactions.
+	PendingListens     []string
+	PendingUnlistens   []string
+	PendingUnlistenAll bool
+
+	// NotifCh receives notifications from the PubSubListener.
+	NotifCh chan *Notification
+
 	// statementTimeout is the session-level statement timeout set via SET statement_timeout.
 	// This is managed entirely by the gateway and is NOT forwarded to PostgreSQL.
 	// The default is initialized from startup params (if present) or the --statement-timeout flag.
@@ -269,4 +280,123 @@ func (m *MultiGatewayConnectionState) GetStartupParams() map[string]string {
 	params := make(map[string]string, len(m.StartupParams))
 	maps.Copy(params, m.StartupParams)
 	return params
+}
+
+// --- LISTEN/NOTIFY state tracking ---
+
+// AddListenChannel registers a channel as actively listened.
+func (m *MultiGatewayConnectionState) AddListenChannel(channel string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.ListenChannels == nil {
+		m.ListenChannels = make(map[string]bool)
+	}
+	m.ListenChannels[channel] = true
+}
+
+// RemoveListenChannel removes a channel from active listeners.
+func (m *MultiGatewayConnectionState) RemoveListenChannel(channel string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.ListenChannels, channel)
+}
+
+// ClearListenChannels removes all listen channels (UNLISTEN *).
+func (m *MultiGatewayConnectionState) ClearListenChannels() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ListenChannels = nil
+}
+
+// GetListenChannels returns a copy of the active listen channels.
+func (m *MultiGatewayConnectionState) GetListenChannels() map[string]bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.ListenChannels) == 0 {
+		return nil
+	}
+	channels := make(map[string]bool, len(m.ListenChannels))
+	for k, v := range m.ListenChannels {
+		channels[k] = v
+	}
+	return channels
+}
+
+// AddPendingListen adds a channel to the pending listen list (for commit).
+func (m *MultiGatewayConnectionState) AddPendingListen(channel string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.PendingListens = append(m.PendingListens, channel)
+}
+
+// AddPendingUnlisten adds a channel to the pending unlisten list.
+func (m *MultiGatewayConnectionState) AddPendingUnlisten(channel string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.PendingUnlistens = append(m.PendingUnlistens, channel)
+}
+
+// AddPendingUnlistenAll marks that UNLISTEN * should happen on commit.
+func (m *MultiGatewayConnectionState) AddPendingUnlistenAll() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.PendingUnlistenAll = true
+}
+
+// CommitPendingListens applies pending listen/unlisten state on transaction commit.
+// Returns lists of channels to subscribe and unsubscribe from.
+func (m *MultiGatewayConnectionState) CommitPendingListens() (subscribes []string, unsubscribes []string, unsubscribeAll bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.PendingUnlistenAll {
+		unsubscribeAll = true
+		// Clear all and apply only the listens that came after UNLISTEN *
+		if m.ListenChannels != nil {
+			for ch := range m.ListenChannels {
+				unsubscribes = append(unsubscribes, ch)
+			}
+		}
+		m.ListenChannels = nil
+	}
+
+	for _, ch := range m.PendingUnlistens {
+		if !unsubscribeAll {
+			if m.ListenChannels != nil && m.ListenChannels[ch] {
+				unsubscribes = append(unsubscribes, ch)
+			}
+		}
+		delete(m.ListenChannels, ch)
+	}
+
+	for _, ch := range m.PendingListens {
+		if m.ListenChannels == nil {
+			m.ListenChannels = make(map[string]bool)
+		}
+		if !m.ListenChannels[ch] {
+			subscribes = append(subscribes, ch)
+			m.ListenChannels[ch] = true
+		}
+	}
+
+	m.PendingListens = nil
+	m.PendingUnlistens = nil
+	m.PendingUnlistenAll = false
+	return subscribes, unsubscribes, unsubscribeAll
+}
+
+// DiscardPendingListens discards pending listen/unlisten state on rollback.
+func (m *MultiGatewayConnectionState) DiscardPendingListens() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.PendingListens = nil
+	m.PendingUnlistens = nil
+	m.PendingUnlistenAll = false
+}
+
+// HasPendingListens returns true if there are pending listen/unlisten changes.
+func (m *MultiGatewayConnectionState) HasPendingListens() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.PendingListens) > 0 || len(m.PendingUnlistens) > 0 || m.PendingUnlistenAll
 }

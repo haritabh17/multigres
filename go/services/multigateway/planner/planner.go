@@ -84,6 +84,14 @@ func (p *Planner) Plan(
 	case ast.T_VariableShowStmt:
 		return p.planVariableShowStmt(sql, stmt.(*ast.VariableShowStmt), conn)
 
+	case ast.T_ListenStmt:
+		return p.planListenStmt(sql, stmt.(*ast.ListenStmt))
+
+	case ast.T_UnlistenStmt:
+		return p.planUnlistenStmt(sql, stmt.(*ast.UnlistenStmt))
+
+	case ast.T_NotifyStmt:
+		return p.planNotifyStmt(sql)
 	// Future: Add more statement types here
 	// case ast.T_SelectStmt:
 	//     return p.planSelectStmt(sql, stmt.(*ast.SelectStmt), conn)
@@ -155,4 +163,22 @@ func (p *Planner) SetDefaultTableGroup(tableGroup string) {
 // GetDefaultTableGroup returns the current default tablegroup.
 func (p *Planner) GetDefaultTableGroup() string {
 	return p.defaultTableGroup
+}
+
+// planListenStmt creates a ListenNotify primitive for LISTEN.
+func (p *Planner) planListenStmt(sql string, stmt *ast.ListenStmt) (*engine.Plan, error) {
+	return engine.NewPlan(sql, engine.NewListenPrimitive(stmt.Conditionname, sql)), nil
+}
+
+// planUnlistenStmt creates a ListenNotify primitive for UNLISTEN.
+func (p *Planner) planUnlistenStmt(sql string, stmt *ast.UnlistenStmt) (*engine.Plan, error) {
+	if stmt.Conditionname == "*" || stmt.Conditionname == "" {
+		return engine.NewPlan(sql, engine.NewUnlistenAllPrimitive(sql)), nil
+	}
+	return engine.NewPlan(sql, engine.NewUnlistenPrimitive(stmt.Conditionname, sql)), nil
+}
+
+// planNotifyStmt routes NOTIFY to the default table group as a regular query.
+func (p *Planner) planNotifyStmt(sql string) (*engine.Plan, error) {
+	return engine.NewPlan(sql, engine.NewRoute(p.defaultTableGroup, "", sql)), nil
 }

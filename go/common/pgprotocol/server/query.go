@@ -610,3 +610,12 @@ func (c *Conn) WriteNotificationResponse(pid int32, channel, payload string) err
 
 	return c.writeMessage(protocol.MsgNotificationResponse, body)
 }
+
+// WriteNotice sends a NoticeResponse with the given severity and message to the client.
+func (c *Conn) WriteNotice(severity, message string) error {
+	diag := &mterrors.PgDiagnostic{
+		Severity: severity,
+		Message:  message,
+	}
+	return c.writeNoticeResponse(diag)
+}
