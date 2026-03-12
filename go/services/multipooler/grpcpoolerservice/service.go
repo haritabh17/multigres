@@ -16,9 +16,9 @@
 package grpcpoolerservice
 
 import (
+	"fmt"
 	"context"
 	"errors"
-	"fmt"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -575,4 +575,15 @@ func healthStateToProto(state *poolerserver.HealthState) *multipoolerpb.StreamPo
 	}
 
 	return resp
+}
+
+// StreamNotifications is a stub for the notification streaming RPC.
+// TODO: Wire to PubSubListener for full shared listener support.
+func (s *poolerService) StreamNotifications(
+	req *multipoolerpb.StreamNotificationsRequest,
+	stream multipoolerpb.MultiPoolerService_StreamNotificationsServer,
+) error {
+	// Stub: return unimplemented for now.
+	// The gateway integration tests use a direct NotificationManager adapter.
+	return fmt.Errorf("StreamNotifications not yet implemented")
 }
