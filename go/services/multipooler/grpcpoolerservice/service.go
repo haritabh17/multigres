@@ -17,6 +17,7 @@ package grpcpoolerservice
 
 import (
 	"fmt"
+	"log/slog"
 	"context"
 	"errors"
 
@@ -47,12 +48,20 @@ func RegisterPoolerServices(senv *servenv.ServEnv, grpc *servenv.GrpcServer) {
 	// Register ourselves to be invoked when the pooler starts
 	poolerserver.RegisterPoolerServices = append(poolerserver.RegisterPoolerServices, func(p *poolerserver.QueryPoolerServer) {
 		if grpc.CheckServiceMap("pooler", senv) {
+			// Create PubSubListener using the pool manager's connection config.
+			var listener *pubsub.Listener
+			if pm := p.PoolManager(); pm != nil {
+				clientConfig := pm.ListenerClientConfig()
+				listener = pubsub.NewListener(clientConfig, slog.Default())
+			}
+
 			srv := &poolerService{
 				pooler: p,
+				pubsub: listener,
 			}
-			// PubSubListener will be initialized when the pooler is ready
-			// and has a valid connection config. For now, StreamNotifications
-			// returns an error if pubsub is nil.
+			if listener != nil {
+				listener.Start(context.Background())
+			}
 			multipoolerpb.RegisterMultiPoolerServiceServer(grpc.Server, srv)
 		}
 	})
