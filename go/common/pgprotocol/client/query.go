@@ -612,3 +612,38 @@ func (c *Conn) parseNotificationResponse(body []byte) (*sqltypes.Notification, e
 		Payload: payload,
 	}, nil
 }
+
+// WaitForNotification blocks until a NotificationResponse message is received
+// from PostgreSQL. This is used by the shared PubSubListener to read async
+// notifications on a dedicated listener connection.
+//
+// The context can be used to cancel the wait. Note that cancellation may leave
+// the connection in an unusable state if a partial read occurred.
+//
+// Returns the parsed notification, or an error if the connection is closed,
+// context is cancelled, or an unexpected message is received.
+func (c *Conn) WaitForNotification(ctx context.Context) (*sqltypes.Notification, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		msgType, body, err := c.readMessage()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read message: %w", err)
+		}
+
+		switch msgType {
+		case protocol.MsgNotificationResponse:
+			return c.parseNotificationResponse(body)
+		case protocol.MsgParameterStatus:
+			// Ignore parameter status updates
+			continue
+		case protocol.MsgNoticeResponse:
+			// Ignore notices
+			continue
+		default:
+			return nil, fmt.Errorf("unexpected message type %c while waiting for notification", msgType)
+		}
+	}
+}
