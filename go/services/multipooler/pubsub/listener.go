@@ -336,3 +336,29 @@ func doubleQuoteEscape(s string) string {
 	}
 	return string(result)
 }
+
+// SubscribeCh registers an existing notification channel to receive notifications
+// for the given PG channel name. Unlike Subscribe, this lets multiple PG channels
+// feed into the same notification channel.
+func (l *Listener) SubscribeCh(channel string, notifCh chan *Notification) {
+	req := request{
+		typ:     reqSubscribe,
+		channel: channel,
+		subCh:   notifCh,
+		done:    make(chan struct{}),
+	}
+	l.requests <- req
+	<-req.done
+}
+
+// UnsubscribeCh removes a subscription for a specific PG channel using the provided channel.
+func (l *Listener) UnsubscribeCh(channel string, notifCh chan *Notification) {
+	req := request{
+		typ:     reqUnsubscribe,
+		channel: channel,
+		subCh:   notifCh,
+		done:    make(chan struct{}),
+	}
+	l.requests <- req
+	<-req.done
+}
