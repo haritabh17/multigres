@@ -15,6 +15,7 @@
 package handler
 
 import (
+	"github.com/multigres/multigres/go/common/pgprotocol/server"
 	"maps"
 	"sync"
 	"time"
@@ -69,6 +70,9 @@ type MultiGatewayConnectionState struct {
 
 	// NotifCh receives notifications from the PubSubListener.
 	NotifCh chan *Notification
+
+	// AsyncNotifCh is the channel for the server.Conn async notification pusher.
+	AsyncNotifCh chan<- *server.NotificationPayload
 
 	// statementTimeout is the session-level statement timeout set via SET statement_timeout.
 	// This is managed entirely by the gateway and is NOT forwarded to PostgreSQL.
