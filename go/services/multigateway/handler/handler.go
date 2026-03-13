@@ -62,6 +62,7 @@ type MultiGatewayHandler struct {
 	statementTimeout time.Duration
 	metrics          *HandlerMetrics
 	slowThreshold    time.Duration
+	notifMgr         NotificationManager
 }
 
 // NewMultiGatewayHandler creates a new PostgreSQL protocol handler.
@@ -77,6 +78,7 @@ func NewMultiGatewayHandler(executor Executor, logger *slog.Logger, statementTim
 		statementTimeout: statementTimeout,
 		metrics:          metrics,
 		slowThreshold:    constants.DefaultSlowQueryThreshold,
+		notifMgr:         DefaultNotificationManager(),
 	}
 }
 
@@ -180,6 +182,11 @@ func (h *MultiGatewayHandler) HandleQuery(ctx context.Context, conn *server.Conn
 				conn.SetTxnStatus(protocol.TxnStatusFailed)
 			}
 		}
+
+		// Post-execution: sync LISTEN/NOTIFY subscriptions.
+		if err == nil {
+			h.handleListenStateChanges(ctx, conn, st, asts[0])
+		}
 	}
 
 	execDuration := time.Since(execStart)
@@ -188,6 +195,10 @@ func (h *MultiGatewayHandler) HandleQuery(ctx context.Context, conn *server.Conn
 	if err != nil {
 		recordSpanError(span, err, mterrors.ExtractSQLSTATE(err))
 	}
+
+	// Flush pending notifications to client after query completes.
+	h.flushNotifications(conn, st)
+
 	return err
 }
 
@@ -395,6 +406,18 @@ func (h *MultiGatewayHandler) ConnectionClosed(conn *server.Conn) {
 	connState := conn.GetConnectionState()
 	if connState != nil {
 		state, ok := connState.(*MultiGatewayConnectionState)
+		if ok && state != nil {
+			// Unsubscribe from all LISTEN channels on disconnect.
+			if state.NotifCh != nil {
+				h.notifMgr.UnsubscribeAll(state.NotifCh)
+				state.NotifCh = nil
+				state.ClearListenChannels()
+			}
+			if state.AsyncNotifCh != nil {
+				conn.StopAsyncNotifications()
+				state.AsyncNotifCh = nil
+			}
+		}
 		if ok && state != nil && len(state.ShardStates) > 0 {
 			// Release all reserved connections regardless of reason (transaction, COPY, portal).
 			// Add a timeout to bound cleanup duration — conn.Context() is still valid here
@@ -460,3 +483,157 @@ func (h *MultiGatewayHandler) recordQueryCompletion(
 
 // Ensure MultiGatewayHandler implements server.Handler interface.
 var _ server.Handler = (*MultiGatewayHandler)(nil)
+
+// SetNotificationManager sets the notification manager for LISTEN/NOTIFY support.
+func (h *MultiGatewayHandler) SetNotificationManager(mgr NotificationManager) {
+	h.notifMgr = mgr
+}
+
+// ensureNotifCh creates the notification channel for a connection if needed.
+func (h *MultiGatewayHandler) ensureNotifCh(state *MultiGatewayConnectionState) chan *Notification {
+	if state.NotifCh == nil {
+		state.NotifCh = make(chan *Notification, 256)
+	}
+	return state.NotifCh
+}
+
+// syncListenSubscriptions subscribes/unsubscribes based on state changes.
+// It also enables async notification delivery on the server.Conn when the
+// first LISTEN is registered, and manages the notification forwarding goroutine.
+func (h *MultiGatewayHandler) syncListenSubscriptions(
+	ctx context.Context,
+	conn *server.Conn,
+	state *MultiGatewayConnectionState,
+	subscribes []string,
+	unsubscribes []string,
+	unsubscribeAll bool,
+) {
+	notifCh := h.ensureNotifCh(state)
+
+	if unsubscribeAll {
+		h.notifMgr.UnsubscribeAll(notifCh)
+	}
+
+	for _, ch := range unsubscribes {
+		h.notifMgr.Unsubscribe(ch, notifCh)
+	}
+
+	for _, ch := range subscribes {
+		h.notifMgr.Subscribe(ch, notifCh)
+	}
+
+	// Start async notification pusher if we have listen channels and no pusher yet.
+	if len(state.ListenChannels) > 0 && state.AsyncNotifCh == nil {
+		asyncCh := conn.EnableAsyncNotifications(ctx)
+		state.AsyncNotifCh = asyncCh
+		// Start forwarding goroutine: notifCh -> asyncCh
+		go h.forwardNotifications(ctx, notifCh, asyncCh)
+	}
+
+	// Stop async pusher if no more listen channels.
+	if len(state.ListenChannels) == 0 && state.AsyncNotifCh != nil {
+		conn.StopAsyncNotifications()
+		state.AsyncNotifCh = nil
+	}
+}
+
+// forwardNotifications reads from the handler notifCh and forwards to the
+// server.Conn async pusher channel.
+func (h *MultiGatewayHandler) forwardNotifications(
+	ctx context.Context,
+	notifCh chan *Notification,
+	asyncCh chan<- *server.NotificationPayload,
+) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case notif, ok := <-notifCh:
+			if !ok {
+				return
+			}
+			payload := &server.NotificationPayload{
+				PID:            notif.PID,
+				Channel:        notif.Channel,
+				Payload:        notif.Payload,
+				IsWarning:      notif.IsWarning,
+				WarningMessage: notif.WarningMessage,
+			}
+			select {
+			case asyncCh <- payload:
+			default:
+				h.logger.Warn("async notification channel full, dropping notification",
+					"channel", notif.Channel)
+			}
+		}
+	}
+}
+
+// flushNotifications delivers any pending notifications to the client.
+// Called after each query completes (after ReadyForQuery would be sent).
+func (h *MultiGatewayHandler) flushNotifications(conn *server.Conn, state *MultiGatewayConnectionState) {
+	if state.NotifCh == nil {
+		return
+	}
+	for {
+		select {
+		case notif := <-state.NotifCh:
+			if notif == nil {
+				return
+			}
+			if notif.IsWarning {
+				// Send as NoticeResponse WARNING
+				if err := conn.WriteNotice("WARNING", notif.WarningMessage); err != nil {
+					h.logger.Error("failed to write notification warning", "error", err)
+				}
+			} else {
+				if err := conn.WriteNotificationResponse(notif.PID, notif.Channel, notif.Payload); err != nil {
+					h.logger.Error("failed to write notification", "error", err,
+						"channel", notif.Channel)
+				}
+			}
+		default:
+			// No more pending notifications
+			return
+		}
+	}
+}
+
+// handleListenStateChanges syncs PubSubListener subscriptions after statement execution.
+func (h *MultiGatewayHandler) handleListenStateChanges(
+	ctx context.Context,
+	conn *server.Conn,
+	state *MultiGatewayConnectionState,
+	stmt ast.Stmt,
+) {
+	switch stmt.NodeTag() {
+	case ast.T_ListenStmt:
+		listenStmt := stmt.(*ast.ListenStmt)
+		if !conn.IsInTransaction() {
+			// Autocommit LISTEN — subscribe immediately
+			h.syncListenSubscriptions(ctx, conn, state, []string{listenStmt.Conditionname}, nil, false)
+		}
+
+	case ast.T_UnlistenStmt:
+		unlistenStmt := stmt.(*ast.UnlistenStmt)
+		if !conn.IsInTransaction() {
+			if unlistenStmt.Conditionname == "*" || unlistenStmt.Conditionname == "" {
+				h.syncListenSubscriptions(ctx, conn, state, nil, nil, true)
+			} else {
+				h.syncListenSubscriptions(ctx, conn, state, nil, []string{unlistenStmt.Conditionname}, false)
+			}
+		}
+
+	case ast.T_TransactionStmt:
+		txnStmt := stmt.(*ast.TransactionStmt)
+		switch txnStmt.Kind {
+		case ast.TRANS_STMT_COMMIT:
+			if state.HasPendingListens() {
+				subs, unsubs, unsubAll := state.CommitPendingListens()
+				h.syncListenSubscriptions(ctx, conn, state, subs, unsubs, unsubAll)
+			}
+		case ast.TRANS_STMT_ROLLBACK:
+			state.DiscardPendingListens()
+		}
+	}
+}

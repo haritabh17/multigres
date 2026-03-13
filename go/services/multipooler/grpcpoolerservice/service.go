@@ -16,9 +16,10 @@
 package grpcpoolerservice
 
 import (
+	"fmt"
+	"log/slog"
 	"context"
 	"errors"
-	"fmt"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -29,23 +30,37 @@ import (
 	"github.com/multigres/multigres/go/common/servenv"
 	"github.com/multigres/multigres/go/common/sqltypes"
 	multipoolerpb "github.com/multigres/multigres/go/pb/multipoolerservice"
+	querypb "github.com/multigres/multigres/go/pb/query"
 	"github.com/multigres/multigres/go/pb/query"
 	"github.com/multigres/multigres/go/services/multipooler/poolerserver"
+	"github.com/multigres/multigres/go/services/multipooler/pubsub"
 	"github.com/multigres/multigres/go/services/multipooler/pools/admin"
 )
 
 // poolerService is the gRPC wrapper for MultiPooler
 type poolerService struct {
 	multipoolerpb.UnimplementedMultiPoolerServiceServer
-	pooler *poolerserver.QueryPoolerServer
+	pooler   *poolerserver.QueryPoolerServer
+	pubsub   *pubsub.Listener
 }
 
 func RegisterPoolerServices(senv *servenv.ServEnv, grpc *servenv.GrpcServer) {
 	// Register ourselves to be invoked when the pooler starts
 	poolerserver.RegisterPoolerServices = append(poolerserver.RegisterPoolerServices, func(p *poolerserver.QueryPoolerServer) {
 		if grpc.CheckServiceMap("pooler", senv) {
+			// Create PubSubListener using the pool manager's connection config.
+			var listener *pubsub.Listener
+			if pm := p.PoolManager(); pm != nil {
+				clientConfig := pm.ListenerClientConfig()
+				listener = pubsub.NewListener(clientConfig, slog.Default())
+			}
+
 			srv := &poolerService{
 				pooler: p,
+				pubsub: listener,
+			}
+			if listener != nil {
+				listener.Start(context.Background())
 			}
 			multipoolerpb.RegisterMultiPoolerServiceServer(grpc.Server, srv)
 		}
@@ -575,4 +590,53 @@ func healthStateToProto(state *poolerserver.HealthState) *multipoolerpb.StreamPo
 	}
 
 	return resp
+}
+
+// StreamNotifications streams async notifications for a subscribed channel.
+func (s *poolerService) StreamNotifications(
+	req *multipoolerpb.StreamNotificationsRequest,
+	stream multipoolerpb.MultiPoolerService_StreamNotificationsServer,
+) error {
+	if s.pubsub == nil {
+		return fmt.Errorf("PubSubListener not initialized")
+	}
+
+	channels := req.GetChannels()
+	if len(channels) == 0 {
+		return fmt.Errorf("no channels specified")
+	}
+	notifCh := make(chan *pubsub.Notification, 256)
+	for _, ch := range channels {
+		s.pubsub.SubscribeCh(ch, notifCh)
+	}
+	defer func() {
+		for _, ch := range channels {
+			s.pubsub.UnsubscribeCh(ch, notifCh)
+		}
+	}()
+
+	for {
+		select {
+		case <-stream.Context().Done():
+			return stream.Context().Err()
+		case notif := <-notifCh:
+			if notif == nil {
+				return nil
+			}
+			resp := &multipoolerpb.StreamNotificationsResponse{
+				Notification: &querypb.PgNotification{
+					Pid:     notif.PID,
+					Channel: notif.Channel,
+					Payload: notif.Payload,
+				},
+			}
+			if notif.IsWarning {
+				resp.IsWarning = true
+				resp.WarningMessage = notif.WarningMessage
+			}
+			if err := stream.Send(resp); err != nil {
+				return err
+			}
+		}
+	}
 }

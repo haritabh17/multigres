@@ -611,8 +611,9 @@ func (pb *PostgresBuilder) RunIsolationTests(t *testing.T, ctx context.Context, 
 
 	t.Logf("Running PostgreSQL isolation tests against multigateway on port %d...", multigatewayPort)
 
-	isolationDir := filepath.Join(pb.BuildDir, "src", "test", "isolation")
-	outputIsoDir := filepath.Join(isolationDir, "output_iso")
+	isolationBuildDir := filepath.Join(pb.BuildDir, "src", "test", "isolation")
+	isolationSourceDir := filepath.Join(pb.SourceDir, "src", "test", "isolation")
+	outputIsoDir := filepath.Join(isolationBuildDir, "output_iso")
 
 	// Ensure the output_iso directory exists. make installcheck creates it, but
 	// pg_isolation_regress (used for selective tests) may not.
@@ -620,24 +621,33 @@ func (pb *PostgresBuilder) RunIsolationTests(t *testing.T, ctx context.Context, 
 		return nil, fmt.Errorf("failed to create output_iso directory: %w", err)
 	}
 
+	// Build the isolation test binary if it doesn't exist.
+	pgIsoRegress := filepath.Join(isolationBuildDir, "pg_isolation_regress")
+	if _, err := os.Stat(pgIsoRegress); os.IsNotExist(err) {
+		t.Logf("Building pg_isolation_regress...")
+		buildCmd := exec.CommandContext(ctx, "make", "-C", isolationBuildDir, "all")
+		if out, err := buildCmd.CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("failed to build pg_isolation_regress: %w\n%s", err, out)
+		}
+	}
+
 	var cmd *exec.Cmd
 	if testsEnv := os.Getenv("PGISOLATION_TESTS"); testsEnv != "" {
-		pgIsoRegress := filepath.Join(isolationDir, "pg_isolation_regress")
 		args := []string{
-			"--inputdir=" + isolationDir,
+			"--inputdir=" + isolationSourceDir,
 			"--outputdir=" + outputIsoDir,
 			"--host=localhost",
 			fmt.Sprintf("--port=%d", multigatewayPort),
 			"--user=postgres",
 			"--dbname=postgres",
 			"--use-existing",
-			"--dlpath=" + isolationDir,
+			"--dlpath=" + isolationBuildDir,
 		}
 		args = append(args, strings.Fields(testsEnv)...)
 		cmd = exec.CommandContext(ctx, pgIsoRegress, args...)
 		t.Logf("Running selective isolation tests: %s", testsEnv)
 	} else {
-		cmd = exec.CommandContext(ctx, "make", "-C", isolationDir, "installcheck")
+		cmd = exec.CommandContext(ctx, "make", "-C", isolationBuildDir, "installcheck")
 		t.Logf("Running full PostgreSQL isolation test suite (installcheck)")
 	}
 

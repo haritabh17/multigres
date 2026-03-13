@@ -1,0 +1,114 @@
+// Copyright 2026 Supabase, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package engine
+
+import (
+	"context"
+
+	"github.com/multigres/multigres/go/common/pgprotocol/server"
+	"github.com/multigres/multigres/go/common/sqltypes"
+	"github.com/multigres/multigres/go/services/multigateway/handler"
+)
+
+// ListenAction specifies what type of LISTEN/UNLISTEN action to take.
+type ListenAction int
+
+const (
+	ListenActionListen ListenAction = iota
+	ListenActionUnlisten
+	ListenActionUnlistenAll
+)
+
+// ListenNotifyPrimitive handles LISTEN/UNLISTEN commands by updating connection state.
+// The actual subscription to the pooler's PubSubListener is managed by the handler.
+type ListenNotifyPrimitive struct {
+	Action  ListenAction
+	Channel string
+	SQL     string
+}
+
+func NewListenPrimitive(channel, sql string) *ListenNotifyPrimitive {
+	return &ListenNotifyPrimitive{Action: ListenActionListen, Channel: channel, SQL: sql}
+}
+
+func NewUnlistenPrimitive(channel, sql string) *ListenNotifyPrimitive {
+	return &ListenNotifyPrimitive{Action: ListenActionUnlisten, Channel: channel, SQL: sql}
+}
+
+func NewUnlistenAllPrimitive(sql string) *ListenNotifyPrimitive {
+	return &ListenNotifyPrimitive{Action: ListenActionUnlistenAll, SQL: sql}
+}
+
+func (l *ListenNotifyPrimitive) StreamExecute(
+	ctx context.Context,
+	exec IExecute,
+	conn *server.Conn,
+	state *handler.MultiGatewayConnectionState,
+	callback func(context.Context, *sqltypes.Result) error,
+) error {
+	switch l.Action {
+	case ListenActionListen:
+		if conn.IsInTransaction() {
+			state.AddPendingListen(l.Channel)
+		} else {
+			state.AddListenChannel(l.Channel)
+		}
+	case ListenActionUnlisten:
+		if conn.IsInTransaction() {
+			state.AddPendingUnlisten(l.Channel)
+		} else {
+			state.RemoveListenChannel(l.Channel)
+		}
+	case ListenActionUnlistenAll:
+		if conn.IsInTransaction() {
+			state.AddPendingUnlistenAll()
+		} else {
+			state.ClearListenChannels()
+		}
+	}
+
+	var tag string
+	switch l.Action {
+	case ListenActionListen:
+		tag = "LISTEN"
+	case ListenActionUnlisten, ListenActionUnlistenAll:
+		tag = "UNLISTEN"
+	}
+
+	return callback(ctx, &sqltypes.Result{CommandTag: tag})
+}
+
+func (l *ListenNotifyPrimitive) String() string {
+	switch l.Action {
+	case ListenActionListen:
+		return "Listen(" + l.Channel + ")"
+	case ListenActionUnlisten:
+		return "Unlisten(" + l.Channel + ")"
+	case ListenActionUnlistenAll:
+		return "UnlistenAll"
+	default:
+		return "ListenNotify"
+	}
+}
+
+// GetQuery returns the original SQL string.
+func (l *ListenNotifyPrimitive) GetQuery() string {
+	return l.SQL
+}
+
+// GetTableGroup returns empty string — LISTEN/UNLISTEN don't target a tablegroup.
+func (l *ListenNotifyPrimitive) GetTableGroup() string {
+	return ""
+}
