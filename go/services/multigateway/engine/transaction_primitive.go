@@ -22,6 +22,7 @@ import (
 	"github.com/multigres/multigres/go/common/parser/ast"
 	"github.com/multigres/multigres/go/common/pgprotocol/protocol"
 	"github.com/multigres/multigres/go/common/pgprotocol/server"
+	"github.com/multigres/multigres/go/common/protoutil"
 	"github.com/multigres/multigres/go/common/sqltypes"
 	multipoolerpb "github.com/multigres/multigres/go/pb/multipoolerservice"
 	"github.com/multigres/multigres/go/services/multigateway/handler"
@@ -114,9 +115,17 @@ func (t *TransactionPrimitive) executeCommit(
 	// Clear pending begin query — transaction is ending.
 	state.PendingBeginQuery = ""
 
-	// If no reserved connections, just return synthetic result
-	// (empty transaction or deferred BEGIN that was never used)
-	if len(state.ShardStates) == 0 {
+	// If no reserved connections, or if the reserved connections don't have
+	// an active transaction (e.g., pinned session where BEGIN was deferred
+	// but never sent to PG), return synthetic result.
+	hasActiveTransaction := false
+	for _, ss := range state.ShardStates {
+		if ss.ReservedState != nil && ss.ReservedState.ReservationReasons&protoutil.ReasonTransaction != 0 {
+			hasActiveTransaction = true
+			break
+		}
+	}
+	if len(state.ShardStates) == 0 || !hasActiveTransaction {
 		conn.SetTxnStatus(protocol.TxnStatusIdle)
 		return callback(ctx, &sqltypes.Result{
 			CommandTag: "COMMIT",
@@ -147,8 +156,16 @@ func (t *TransactionPrimitive) executeRollback(
 	// Clear pending begin query — transaction is ending.
 	state.PendingBeginQuery = ""
 
-	// If no reserved connections, just return synthetic result
-	if len(state.ShardStates) == 0 {
+	// If no reserved connections, or if the reserved connections don't have
+	// an active transaction, return synthetic result.
+	hasActiveRbTransaction := false
+	for _, ss := range state.ShardStates {
+		if ss.ReservedState != nil && ss.ReservedState.ReservationReasons&protoutil.ReasonTransaction != 0 {
+			hasActiveRbTransaction = true
+			break
+		}
+	}
+	if len(state.ShardStates) == 0 || !hasActiveRbTransaction {
 		conn.SetTxnStatus(protocol.TxnStatusIdle)
 		return callback(ctx, &sqltypes.Result{
 			CommandTag: "ROLLBACK",
