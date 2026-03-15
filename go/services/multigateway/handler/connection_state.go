@@ -59,6 +59,11 @@ type MultiGatewayConnectionState struct {
 	// connection so the multipooler can use the exact statement instead of plain "BEGIN".
 	PendingBeginQuery string
 
+	// SessionPinned indicates this connection requires session affinity.
+	// When true, all queries are routed through a reserved connection
+	// to maintain session-local state (e.g., temp tables).
+	SessionPinned bool
+
 	// statementTimeout is the session-level statement timeout set via SET statement_timeout.
 	// This is managed entirely by the gateway and is NOT forwarded to PostgreSQL.
 	// The default is initialized from startup params (if present) or the --statement-timeout flag.
