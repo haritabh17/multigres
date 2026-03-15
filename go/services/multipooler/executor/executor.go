@@ -122,7 +122,10 @@ func (e *Executor) ExecuteQuery(ctx context.Context, target *query.Target, sql s
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get connection for user %s: %w", user, err)
 	}
-	defer conn.Recycle()
+	defer func() {
+		conn.Conn.ResetRoleState(ctx)
+		conn.Recycle()
+	}()
 
 	// Execute the query - the regular.Conn.QueryWithRetry returns []*sqltypes.Result
 	// with proper field info, rows, and command tags already populated.
@@ -197,7 +200,10 @@ func (e *Executor) StreamExecute(
 	if err != nil {
 		return nil, fmt.Errorf("failed to get connection for user %s: %w", user, err)
 	}
-	defer conn.Recycle()
+	defer func() {
+		conn.Conn.ResetRoleState(ctx)
+		conn.Recycle()
+	}()
 
 	// Use streaming query execution with retry since this is a stateless pool query.
 	if err := conn.Conn.QueryStreamingWithRetry(ctx, sql, callback); err != nil {
@@ -342,7 +348,10 @@ func (e *Executor) portalExecuteWithRegular(
 	if err != nil {
 		return nil, fmt.Errorf("failed to get connection for user %s: %w", user, err)
 	}
-	defer conn.Recycle()
+	defer func() {
+		conn.Conn.ResetRoleState(ctx)
+		conn.Recycle()
+	}()
 
 	// Ensure the statement is prepared on this connection (with consolidation)
 	canonicalName, err := e.ensurePrepared(ctx, conn.Conn, preparedStatement)
@@ -395,7 +404,10 @@ func (e *Executor) Describe(
 	if err != nil {
 		return nil, fmt.Errorf("failed to get connection for user %s: %w", user, err)
 	}
-	defer conn.Recycle()
+	defer func() {
+		conn.Conn.ResetRoleState(ctx)
+		conn.Recycle()
+	}()
 
 	// Describe prepared statement
 	// Ensure the statement is prepared on this connection

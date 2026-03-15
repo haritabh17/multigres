@@ -200,6 +200,40 @@ func (c *Conn) ResetAllSettings(ctx context.Context) error {
 	return nil
 }
 
+// ResetRoleState resets role and session_authorization on the PG backend
+// and clears tracked settings entirely. This ensures pooled connections
+// don't leak authorization state to subsequent users.
+// Called before returning connections to the pool.
+//
+// We clear ALL tracked settings (not just role) because the Settings objects
+// are cached and shared across connections — mutating Vars would corrupt
+// the cache. Clearing to nil routes the connection to pool.clean, and the
+// next checkout will re-apply the full desired settings via ApplySettings.
+func (c *Conn) ResetRoleState(ctx context.Context) {
+	state := c.State()
+	if state == nil {
+		return
+	}
+	settings := state.GetSettings()
+	if settings == nil {
+		return
+	}
+
+	_, hasRole := settings.Vars["role"]
+	_, hasSessionAuth := settings.Vars["session_authorization"]
+	if !hasRole && !hasSessionAuth {
+		return
+	}
+
+	// Reset everything on PG backend — role and session_authorization have
+	// GUC_NO_RESET_ALL so must be reset explicitly before RESET ALL.
+	c.Query(ctx, "RESET ROLE; RESET SESSION AUTHORIZATION; RESET ALL") //nolint:errcheck
+
+	// Clear tracked settings so connection goes to pool.clean.
+	// Do NOT mutate settings.Vars — it is shared via the settings cache.
+	state.SetSettings(nil)
+}
+
 // --- State management ---
 
 // State returns the connection's state.
