@@ -88,6 +88,14 @@ func (s *ApplySessionState) executeSet(
 	callback func(context.Context, *sqltypes.Result) error,
 ) error {
 	value := extractVariableValue(s.VariableStmt.Args)
+
+	// SET timezone TO DEFAULT produces zone_value "default" from the grammar.
+	// PG treats this as RESET timezone, not SET timezone='default'.
+	if strings.EqualFold(s.VariableStmt.Name, "timezone") && strings.EqualFold(value, "default") {
+		state.ResetSessionVariable(s.VariableStmt.Name)
+		return callback(ctx, &sqltypes.Result{CommandTag: "SET"})
+	}
+
 	state.SetSessionVariable(s.VariableStmt.Name, value)
 	return callback(ctx, &sqltypes.Result{
 		CommandTag: "SET",
